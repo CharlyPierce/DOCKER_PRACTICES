@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mi-app-service
+spec:
+  selector:
+    app: mi-app
+  type: NodePort
+  ports:
+    - protocol: TCP
+      port: 5000        # puerto dentro del cluster
+      targetPort: 5000  # puerto del contenedor
+      nodePort: 30000   # puerto de tu máquina host
