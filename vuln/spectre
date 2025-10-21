@@ -1,0 +1,168 @@
+// ============================================
+// EJEMPLO CONCEPTUAL DE ATAQUE TIPO SPECTRE
+// (Simplificado para propósitos educativos)
+// ============================================
+
+/*
+PASO 1: El atacante entrena al predictor de ramas
+del CPU para que "piense" que cierta condición siempre es verdadera
+*/
+
+// Array de "sondeo" - cada elemento representa una página de memoria
+const probeArray = new Uint8Array(256 * 4096); // 256 páginas
+
+// Datos secretos que queremos robar (simulados)
+const secretData = "password123";
+const secretBytes = new TextEncoder().encode(secretData);
+
+// ============================================
+// FUNCIÓN VULNERABLE (simulada)
+// ============================================
+function vulnerableFunction(index) {
+    // En un sistema real, esto tendría una verificación de límites:
+    // if (index < dataArray.length) { ... }
+    
+    // PERO durante la ejecución especulativa, el CPU ejecuta
+    // el código ANTES de verificar si index es válido
+    
+    // El CPU lee el valor secreto (fuera de límites)
+    const secretValue = secretBytes[index] || 0;
+    
+    // Y lo usa como índice en el probeArray
+    // Esto carga probeArray[secretValue * 4096] en la CACHÉ del CPU
+    const temp = probeArray[secretValue * 4096];
+    
+    // Cuando el CPU se da cuenta del error, descarta 'temp'
+    // PERO el valor ya está en la caché!
+}
+
+// ============================================
+// PASO 2: Entrenar al predictor de ramas
+// ============================================
+function trainBranchPredictor() {
+    // Llamamos la función muchas veces con índices válidos
+    // para "engañar" al predictor de ramas
+    for (let i = 0; i < 100; i++) {
+        vulnerableFunction(0); // Índice válido
+    }
+}
+
+// ============================================
+// PASO 3: Medir tiempos para detectar qué está en caché
+// ============================================
+function measureCacheTime(index) {
+    // Limpiar caché (flush)
+    const dummy = new Uint8Array(10 * 1024 * 1024);
+    
+    // Medir cuánto tarda acceder a probeArray[index]
+    const start = performance.now();
+    const value = probeArray[index];
+    const end = performance.now();
+    
+    return (end - start) * 1000000; // Convertir a nanosegundos
+}
+
+// ============================================
+// PASO 4: El ataque completo
+// ============================================
+function spectreAttack() {
+    console.log("=== SIMULACIÓN DE ATAQUE SPECTRE ===\n");
+    
+    // 1. Entrenar el predictor
+    trainBranchPredictor();
+    
+    // 2. Limpiar la caché del probeArray
+    for (let i = 0; i < 256; i++) {
+        probeArray[i * 4096] = 0;
+    }
+    
+    // 3. Provocar la ejecución especulativa con índice malicioso
+    // (intentando leer el primer byte de secretBytes)
+    vulnerableFunction(0);
+    
+    // 4. Medir qué valores están en caché
+    console.log("Midiendo tiempos de acceso a memoria caché...\n");
+    
+    const timings = [];
+    for (let i = 0; i < 256; i++) {
+        const time = measureCacheTime(i * 4096);
+        timings.push({ char: i, time: time });
+    }
+    
+    // Ordenar por tiempo (más rápido = estaba en caché)
+    timings.sort((a, b) => a.time - b.time);
+    
+    // Los primeros resultados son los que estaban en caché
+    console.log("Top 5 valores más rápidos (probablemente en caché):");
+    for (let i = 0; i < 5; i++) {
+        const char = String.fromCharCode(timings[i].char);
+        console.log(`Byte: ${timings[i].char} ('${char}') - Tiempo: ${timings[i].time.toFixed(2)}ns`);
+    }
+    
+    console.log("\n¿Qué revela esto?");
+    console.log("El byte con el tiempo MÁS RÁPIDO es probablemente");
+    console.log("el primer carácter de la contraseña secreta.");
+    console.log(`Esperábamos: '${secretData[0]}' (byte: ${secretData.charCodeAt(0)})`);
+}
+
+// ============================================
+// EXPLICACIÓN DETALLADA
+// ============================================
+console.log(`
+╔═══════════════════════════════════════════════════════════════╗
+║  CÓMO FUNCIONA SPECTRE - PASO A PASO                          ║
+╚═══════════════════════════════════════════════════════════════╝
+
+1. EJECUCIÓN ESPECULATIVA:
+   - El CPU "adivina" que index < dataArray.length
+   - Ejecuta el código por adelantado
+   - Lee secretBytes[index] (FUERA de límites!)
+   - Usa ese valor para acceder a probeArray
+
+2. EL CPU SE DA CUENTA DEL ERROR:
+   - "¡Ops! index NO es válido"
+   - Descarta todos los resultados
+   - PERO: probeArray[secretValue * 4096] YA está en caché
+
+3. CANAL LATERAL DE TIMING:
+   - Acceder a datos en CACHÉ es ~100x más rápido
+   - Medimos el tiempo de acceso a cada posición
+   - La posición MÁS RÁPIDA revela el byte secreto
+
+4. EL ATAQUE DESDE UN SITIO WEB:
+   - JavaScript puede medir tiempos con performance.now()
+   - Puede provocar ejecución especulativa
+   - Puede inferir qué está en caché por los tiempos
+   - ¡Puede leer memoria de otros procesos!
+
+╔═══════════════════════════════════════════════════════════════╗
+║  DIFERENCIA: MELTDOWN vs SPECTRE                              ║
+╚═══════════════════════════════════════════════════════════════╝
+
+MELTDOWN:
+- Explota la ejecución especulativa para leer memoria del KERNEL
+- Permite leer TODA la memoria física
+- Solo afectaba a Intel inicialmente
+- Más fácil de explotar pero más fácil de parchear
+
+SPECTRE:
+- Entrena al predictor de ramas para mal-especular
+- Lee memoria del MISMO proceso o contexto
+- Afecta a Intel, AMD, ARM
+- Más difícil de explotar pero casi imposible de parchear completamente
+
+╔═══════════════════════════════════════════════════════════════╗
+║  POR QUÉ ES TAN PELIGROSO EN NAVEGADORES                      ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Un sitio web malicioso puede:
+- Leer contraseñas de gestores de contraseñas
+- Robar cookies de sesión
+- Leer datos de otras pestañas
+- Acceder a claves criptográficas en memoria
+
+¡Todo esto sin ningún permiso especial!
+`);
+
+// Ejecutar la simulación
+spectreAttack();
